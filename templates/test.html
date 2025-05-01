@@ -1,31 +1,49 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>ESP32 Test Page</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Octa-Solar Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        .container {
+            text-align: center;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #007bff;
+        }
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        a:hover {
+            background-color: #0056b3;
+        }
+    </style>
 </head>
 <body>
-    <h1>ESP32 Sensor Test</h1>
-    <button onclick="toggleSwitch(1)">Switch ON</button>
-    <button onclick="toggleSwitch(0)">Switch OFF</button>
-    <div id="data"></div>
-
-    <script>
-        function toggleSwitch(state) {
-            fetch('/switch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ state: state })
-            }).then(response => response.json()).then(data => alert(data.switch));
-        }
-
-        function fetchData() {
-            fetch('/data')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('data').innerHTML = JSON.stringify(data, null, 2);
-                });
-        }
-        setInterval(fetchData, 2000); // Update every 2 seconds
-    </script>
+    <div class="container">
+        <h1>Welcome to Octa-Solar</h1>
+        <p>Access the Octa-Solar dashboard through our app.</p>
+        <a href="http://192.168.205.6:8080" target="_blank">Go to Octa-Solar App</a>
+        <p><em>Note:</em> Ensure the Flutter app is running. Update the link if the port changes.</p>
+    </div>
 </body>
 </html>

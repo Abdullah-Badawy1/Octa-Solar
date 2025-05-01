@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template
-from flask_cors import CORS  # Import CORS
+from flask_cors import CORS
 import mysql.connector
 from datetime import datetime
 import hashlib
@@ -25,7 +25,15 @@ def get_db_connection():
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Signup endpoint
+# Root route renders test.html
+@app.route('/')
+def index():
+    return render_template('test.html')
+
+@app.route('/test')
+def test():
+    return render_template('test.html')
+
 @app.route('/signup', methods=['POST'])
 def signup():
     data = request.get_json()
@@ -35,21 +43,18 @@ def signup():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Check if user exists
     cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
     if cursor.fetchone():
         cursor.close()
         conn.close()
         return jsonify({'status': 'error', 'message': 'User already exists'}), 400
 
-    # Insert new user
     cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, password))
     conn.commit()
     cursor.close()
     conn.close()
     return jsonify({'status': 'success', 'message': 'User created'}), 201
 
-# Login endpoint
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -66,15 +71,6 @@ def login():
     if user:
         return jsonify({'status': 'success', 'message': 'Login successful'}), 200
     return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
-
-# Existing routes...
-@app.route('/')
-def index():
-    return "Welcome to Octa-Solar Sensor Dashboard"
-
-@app.route('/test')
-def test():
-    return render_template('test.html')
 
 @app.route('/update', methods=['POST'])
 def update():
