@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ESP32 Test Page</title>
+</head>
+<body>
+    <h1>ESP32 Sensor Test</h1>
+    <button onclick="toggleSwitch(1)">Switch ON</button>
+    <button onclick="toggleSwitch(0)">Switch OFF</button>
+    <div id="data"></div>
+
+    <script>
+        function toggleSwitch(state) {
+            fetch('/switch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ state: state })
+            }).then(response => response.json()).then(data => alert(data.switch));
+        }
+
+        function fetchData() {
+            fetch('/data')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('data').innerHTML = JSON.stringify(data, null, 2);
+                });
+        }
+        setInterval(fetchData, 2000); // Update every 2 seconds
+    </script>
+</body>
+</html>

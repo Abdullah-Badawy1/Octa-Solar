@@ -1,0 +1,438 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard - Octa-Solar Water Monitor{% endblock %}
+
+{% block extra_css %}
+<style>
+    .reading-card {
+        transition: all 0.3s ease;
+    }
+    .reading-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+    }
+    .switch {
+        position: relative;
+        display: inline-block;
+        width: 60px;
+        height: 34px;
+    }
+    .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+    }
+    .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 34px;
+    }
+    .slider:before {
+        position: absolute;
+        content: "";
+        height: 26px;
+        width: 26px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
+    }
+    input:checked + .slider {
+        background-color: #2196F3;
+    }
+    input:checked + .slider:before {
+        transform: translateX(26px);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h2>Dashboard</h2>
+        <p>Welcome, <strong>{{ session.username }}</strong>! View your Octa-Solar water monitoring data below.</p>
+    </div>
+    <div class="col-md-4 text-end">
+        <div class="btn-group" role="group">
+            <button type="button" class="btn btn-outline-primary time-filter" data-range="hour">Hour</button>
+            <button type="button" class="btn btn-primary time-filter" data-range="day">Day</button>
+            <button type="button" class="btn btn-outline-primary time-filter" data-range="week">Week</button>
+            <button type="button" class="btn btn-outline-primary time-filter" data-range="month">Month</button>
+        </div>
+    </div>
+</div>
+
+<!-- Latest Readings -->
+<div class="row mb-4">
+    <div class="col-md-4">
+        <div class="card reading-card">
+            <div class="card-body">
+                <h5 class="card-title">Water Quality</h5>
+                <h2 class="display-5 text-primary" id="latest-tds">-- ppm</h2>
+                <p class="card-text">TDS Level</p>
+                <div class="progress" role="progressbar">
+                    <div class="progress-bar" id="tds-progress" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card reading-card">
+            <div class="card-body">
+                <h5 class="card-title">Flow Rate</h5>
+                <h2 class="display-5 text-success" id="latest-flow">-- L/min</h2>
+                <p class="card-text">Current Flow</p>
+                <div class="progress" role="progressbar">
+                    <div class="progress-bar bg-success" id="flow-progress" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card reading-card">
+            <div class="card-body">
+                <h5 class="card-title">Solar Power</h5>
+                <h2 class="display-5 text-warning" id="latest-power">-- W</h2>
+                <p class="card-text">Current Power</p>
+                <div class="progress" role="progressbar">
+                    <div class="progress-bar bg-warning" id="power-progress" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Control Panel -->
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5><i class="fas fa-sliders-h me-2"></i>Control Panel</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h5>System Power</h5>
+                            <label class="switch">
+                                <input type="checkbox" id="relay-toggle">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <p class="text-muted">Control D13 Relay</p>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex flex-column">
+                            <h5>Total Water</h5>
+                            <h3 id="total-liters">-- L</h3>
+                            <p class="text-muted">Water Consumption</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex flex-column">
+                            <h5>Light Level</h5>
+                            <div class="d-flex align-items-center">
+                                <i class="fas fa-sun text-warning me-2" style="font-size: 1.5rem;"></i>
+                                <div class="progress flex-grow-1" style="height: 20px;">
+                                    <div class="progress-bar bg-warning" id="light-progress" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <p class="text-muted mt-2" id="light-value">--</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5><i class="fas fa-chart-line me-2"></i>Water Quality Trend</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="tdsChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5><i class="fas fa-chart-line me-2"></i>Power Usage Trend</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="powerChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Readings Table -->
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5><i class="fas fa-table me-2"></i>Recent Readings</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Voltage (V)</th>
+                                <th>Current (A)</th>
+                                <th>TDS (ppm)</th>
+                                <th>Flow Rate (L/min)</th>
+                                <th>Total Water (L)</th>
+                                <th>Light</th>
+                                <th>Relay</th>
+                            </tr>
+                        </thead>
+                        <tbody id="readings-table-body">
+                            <tr>
+                                <td colspan="8" class="text-center">Loading data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Chart objects
+    let tdsChart, powerChart;
+    // Current selected time range
+    let currentTimeRange = 'day';
+    // Store latest relay state
+    let currentRelayState = false;
+
+    // Initialize page when DOM is ready
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize charts
+        initCharts();
+        
+        // Load initial data
+        loadData(currentTimeRange);
+        
+        // Setup refresh interval (every 10 seconds)
+        setInterval(() => {
+            loadData(currentTimeRange);
+        }, 10000);
+        
+        // Setup time filter buttons
+        document.querySelectorAll('.time-filter').forEach(button => {
+            button.addEventListener('click', function() {
+                // Update UI
+                document.querySelectorAll('.time-filter').forEach(btn => {
+                    btn.classList.remove('btn-primary');
+                    btn.classList.add('btn-outline-primary');
+                });
+                this.classList.remove('btn-outline-primary');
+                this.classList.add('btn-primary');
+                
+                // Update data
+                currentTimeRange = this.getAttribute('data-range');
+                loadData(currentTimeRange);
+            });
+        });
+        
+        // Setup relay toggle
+        document.getElementById('relay-toggle').addEventListener('change', function() {
+            const newState = this.checked;
+            toggleRelay(newState);
+        });
+    });
+
+    // Initialize charts
+    function initCharts() {
+        // TDS Chart
+        const tdsCtx = document.getElementById('tdsChart').getContext('2d');
+        tdsChart = new Chart(tdsCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'TDS (ppm)',
+                    data: [],
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // Power Chart
+        const powerCtx = document.getElementById('powerChart').getContext('2d');
+        powerChart = new Chart(powerCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Power (W)',
+                    data: [],
+                    borderColor: 'rgba(255, 159, 64, 1)',
+                    backgroundColor: 'rgba(255, 159, 64, 0.2)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    }
+
+    // Load data from API
+    function loadData(timeRange) {
+        fetch(`/api/readings?range=${timeRange}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success' && data.data.length > 0) {
+                    updateCharts(data.data);
+                    updateLatestReadings(data.data[data.data.length - 1]);
+                    updateTable(data.data.slice(-10).reverse()); // Show latest 10 readings
+                }
+            })
+            .catch(error => console.error('Error fetching data:', error));
+    }
+
+    // Update chart data
+    function updateCharts(readings) {
+        // Format data for charts
+        const labels = readings.map(r => {
+            const date = new Date(r.timestamp);
+            return date.toLocaleTimeString();
+        });
+        
+        const tdsData = readings.map(r => r.tds);
+        const powerData = readings.map(r => r.voltage * r.current); // Power = Voltage * Current
+        
+        // Update TDS Chart
+        tdsChart.data.labels = labels;
+        tdsChart.data.datasets[0].data = tdsData;
+        tdsChart.update();
+        
+        // Update Power Chart
+        powerChart.data.labels = labels;
+        powerChart.data.datasets[0].data = powerData;
+        powerChart.update();
+    }
+
+    // Update latest readings display
+    function updateLatestReadings(reading) {
+        // Update TDS
+        document.getElementById('latest-tds').textContent = `${Math.round(reading.tds)} ppm`;
+        const tdsProgress = Math.min(reading.tds / 1000 * 100, 100);
+        document.getElementById('tds-progress').style.width = `${tdsProgress}%`;
+        
+        // Update Flow Rate
+        document.getElementById('latest-flow').textContent = `${reading.flow_rate.toFixed(1)} L/min`;
+        const flowProgress = Math.min(reading.flow_rate / 10 * 100, 100);
+        document.getElementById('flow-progress').style.width = `${flowProgress}%`;
+        
+        // Calculate and update Power
+        const power = reading.voltage * reading.current;
+        document.getElementById('latest-power').textContent = `${power.toFixed(1)} W`;
+        const powerProgress = Math.min(power / 100 * 100, 100);
+        document.getElementById('power-progress').style.width = `${powerProgress}%`;
+        
+        // Update Total Liters
+        document.getElementById('total-liters').textContent = `${reading.total_liters.toFixed(1)} L`;
+        
+        // Update Light Level
+        document.getElementById('light-value').textContent = reading.light;
+        const lightProgress = Math.min(reading.light / 1023 * 100, 100);
+        document.getElementById('light-progress').style.width = `${lightProgress}%`;
+        
+        // Update Relay State
+        currentRelayState = reading.relay_state;
+        document.getElementById('relay-toggle').checked = currentRelayState;
+    }
+
+    // Update readings table
+    function updateTable(readings) {
+        const tableBody = document.getElementById('readings-table-body');
+        
+        // Clear existing table rows
+        tableBody.innerHTML = '';
+        
+        // Add new rows
+        readings.forEach(reading => {
+            const date = new Date(reading.timestamp);
+            const formattedTime = date.toLocaleTimeString();
+            
+            const row = document.createElement('tr');
+            
+            // Calculate power
+            const power = reading.voltage * reading.current;
+            
+            row.innerHTML = `
+                <td>${formattedTime}</td>
+                <td>${reading.voltage.toFixed(1)}</td>
+                <td>${reading.current.toFixed(2)}</td>
+                <td>${Math.round(reading.tds)}</td>
+                <td>${reading.flow_rate.toFixed(1)}</td>
+                <td>${reading.total_liters.toFixed(1)}</td>
+                <td>${reading.light}</td>
+                <td>${reading.relay_state ? 
+                    '<span class="badge bg-success">ON</span>' : 
+                    '<span class="badge bg-secondary">OFF</span>'}</td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    }
+
+    // Toggle relay state
+    function toggleRelay(newState) {
+        fetch('/api/control/relay', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                state: newState
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                currentRelayState = data.relay_state;
+                document.getElementById('relay-toggle').checked = currentRelayState;
+            }
+        })
+        .catch(error => console.error('Error toggling relay:', error));
+    }
+</script>
+{% endblock %}
