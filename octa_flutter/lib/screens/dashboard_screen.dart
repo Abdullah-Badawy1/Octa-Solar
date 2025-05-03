@@ -73,7 +73,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     try {
-      final response = await http.get(Uri.parse('http://192.168.205.6:5000/api/sensors'));
+      final response = await http.get(Uri.parse('http://192.168.34.6:5000/api/sensors'));
       print('Fetch response: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
@@ -162,7 +162,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     try {
       final switchResponse = await http.post(
-        Uri.parse('http://192.168.205.6:5000/api/switch'),
+        Uri.parse('http://192.168.34.6:5000/api/switch'),
         body: jsonEncode({'state': value ? 1 : 0, 'pump_id': pumpId}),
         headers: {'Content-Type': 'application/json'},
       );

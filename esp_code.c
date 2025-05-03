@@ -3,65 +3,55 @@
 #include <LiquidCrystal_I2C.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
-#include <ArduinoJson.h> // Add this library for JSON parsing
+#include <ArduinoJson.h>
 
-// Wi-Fi credentials
 const char* ssid = "Hidden";
 const char* password = "abdullah1122";
 const char* serverName = "http://192.168.205.6:5000/update";
+const char* pumpStateUrl = "http://192.168.205.6:5000/api/pump_state";
 
-// LCD setup
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcdInitialized = false;
 
-// Pin definitions
 const int voltagePin = 34;
 const int currentPin = 35;
 const int tdsPin = 32;
 const int flowSensorPin = 26;
 const int ldrPin = 33;
 const int buzzerPin = 25;
-const int pumpPin = 13; // LED/pump control pin
+const int pumpPin = 13;
 const int testBuzzerPin = 27;
 const int greenLedPin = 12;
 
-// Flow sensor variables
 volatile int flowPulseCount = 0;
 float flowRate = 0.0;
 float liters = 0.0;
 unsigned long lastFlowTime = 0;
 const float FLOW_CALIBRATION_FACTOR = 7.5;
 
-// Sensor calibration
 float ACS712_offset = 2.5;
 float ecCalibration = 1.0;
 float Vref = 3.3;
 float calibrationFactor = 0.909;
 const float VOLTAGE_DIVIDER_RATIO = 5.0;
 
-// Connection variables
 bool serverConnected = false;
 bool wifiConnected = false;
 unsigned long lastAlertToggle = 0;
 bool alertState = false;
 unsigned long wifiReconnectAttempt = 0;
-const int WIFI_RECONNECT_INTERVAL = 30000;
+const int WIFI_RECONNECT_INTERVAL = 5000;
 const int WIFI_CONNECTION_TIMEOUT = 10000;
 
-// Timing variables
 unsigned long lastSensorRead = 0;
 unsigned long lastDataSend = 0;
 unsigned long lastSerialOutput = 0;
 const int SENSOR_READ_INTERVAL = 250;
-const int SERVER_UPDATE_INTERVAL = 2000;
+const int SERVER_UPDATE_INTERVAL = 500;
 const int SERIAL_OUTPUT_INTERVAL = 1000;
 
-// Debug variables
 bool debugMode = true;
-unsigned long lastManualLedToggle = 0;
-const int MANUAL_LED_TOGGLE_INTERVAL = 10000; // 10 seconds for testing
 
-// Sensor data structure
 struct SensorData {
   float voltage;
   float current;
@@ -71,16 +61,14 @@ struct SensorData {
   bool pumpState;
 } sensorData;
 
-// Preferences
 Preferences preferences;
-
-// HTTP Client
 HTTPClient http;
 bool httpInitialized = false;
 
-// Heartbeat
 unsigned long lastHeartbeat = 0;
 const int HEARTBEAT_INTERVAL = 5000;
+unsigned long lastPumpToggle = 0;
+const unsigned long PUMP_TOGGLE_COOLDOWN = 2000; // Skip redundant checks for 2s after toggle
 
 void IRAM_ATTR flowPulse() {
   flowPulseCount++;
@@ -163,10 +151,12 @@ void connectToWiFi() {
 void readSensors() {
   int voltageRaw = analogRead(voltagePin);
   sensorData.voltage = (voltageRaw * (Vref / 4095.0)) * VOLTAGE_DIVIDER_RATIO;
+  if (sensorData.voltage < 0.1 || sensorData.voltage > 30.0) sensorData.voltage = 0.0;
 
   int currentRaw = analogRead(currentPin);
   float voltageOut = (currentRaw * Vref) / 4095.0;
   sensorData.current = (voltageOut - ACS712_offset) / 0.185;
+  if (sensorData.current < 0 || sensorData.current > 10.0) sensorData.current = 0.0;
 
   float waterTemp = 25.0;
   int tdsRaw = analogRead(tdsPin);
@@ -174,8 +164,10 @@ void readSensors() {
   float temperatureCoefficient = 1.0 + 0.02 * (waterTemp - 25.0);
   float ec = (tdsVoltage / temperatureCoefficient) * ecCalibration;
   sensorData.tdsValue = ((133.42 * pow(ec, 3)) - (255.86 * pow(ec, 2)) + (857.39 * ec)) * 0.5 * calibrationFactor;
+  if (sensorData.tdsValue < 0 || sensorData.tdsValue > 1000.0) sensorData.tdsValue = 0.0;
 
   sensorData.ldrValue = analogRead(ldrPin);
+  if (sensorData.ldrValue < 10 || sensorData.ldrValue > 4095) sensorData.ldrValue = 0;
 
   detachInterrupt(digitalPinToInterrupt(flowSensorPin));
   unsigned long currentTime = millis();
@@ -189,12 +181,20 @@ void readSensors() {
   flowPulseCount = 0;
   attachInterrupt(digitalPinToInterrupt(flowSensorPin), flowPulse, RISING);
 
-  sensorData.pumpState = digitalRead(pumpPin);
+  // Removed sensorData.pumpState = digitalRead(pumpPin) to prevent hardware override
 
   if (sensorData.tdsValue > 1000 || (flowRate < 0.5 && flowRate > 0.1)) {
     digitalWrite(buzzerPin, HIGH);
   } else {
     digitalWrite(buzzerPin, LOW);
+  }
+
+  if (debugMode) {
+    Serial.print("Sensor values - Voltage: "); Serial.print(sensorData.voltage);
+    Serial.print(", Current: "); Serial.print(sensorData.current);
+    Serial.print(", TDS: "); Serial.print(sensorData.tdsValue);
+    Serial.print(", Flow: "); Serial.print(sensorData.flowRate);
+    Serial.print(", Light: "); Serial.println(sensorData.ldrValue);
   }
 }
 
@@ -224,13 +224,110 @@ void updateLCD() {
   lcd.print(sensorData.pumpState ? "ON " : "OFF");
 }
 
-// Improved server data handling with proper JSON parsing
-void sendDataToServer() {
-  if (!wifiConnected) return;
+void checkPumpState() {
+  if (!wifiConnected) {
+    Serial.println("WiFi not connected, skipping pump state check");
+    return;
+  }
 
   if (!httpInitialized) {
-    http.setTimeout(5000);
+    http.setTimeout(2000);
     httpInitialized = true;
+  }
+
+  static unsigned long lastLedToggle = 0;
+  const unsigned long LED_DEBOUNCE_MS = 1000;
+
+  int retries = 2;
+  bool success = false;
+
+  while (retries > 0 && !success) {
+    http.begin(pumpStateUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    int httpResponseCode = http.GET();
+    if (debugMode) {
+      Serial.println("Checking pump state...");
+    }
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      if (!serverConnected) {
+        serverConnected = true;
+        Serial.println("Server connected!");
+      }
+
+      if (debugMode) {
+        Serial.print("Pump state response: ");
+        Serial.println(response);
+      }
+
+      StaticJsonDocument<256> doc;
+      DeserializationError error = deserializeJson(doc, response);
+      if (error) {
+        Serial.print("JSON parsing failed: ");
+        Serial.println(error.c_str());
+        retries--;
+        if (retries > 0) {
+          Serial.println("Retrying pump state check...");
+          delay(500);
+        }
+        http.end();
+        continue;
+      }
+
+      JsonObject pumpState = doc["pump_state"];
+      if (pumpState && pumpState["pump_id"] == 1) {
+        bool newState = pumpState["state"] == 1;
+        unsigned long currentMillis = millis();
+        if (newState != sensorData.pumpState && currentMillis - lastLedToggle > LED_DEBOUNCE_MS) {
+          digitalWrite(pumpPin, newState ? HIGH : LOW);
+          sensorData.pumpState = newState;
+          lastLedToggle = currentMillis;
+          lastPumpToggle = currentMillis; // Update toggle timestamp
+          Serial.print("Pump 1 (Pin 13) set to ");
+          Serial.println(newState ? "ON" : "OFF");
+        } else {
+          Serial.println("Pump state unchanged or debounced");
+        }
+      }
+      success = true;
+    } else {
+      if (serverConnected) {
+        serverConnected = false;
+        Serial.print("Pump state check failed with error: ");
+        Serial.println(httpResponseCode);
+      }
+      retries--;
+      if (retries > 0) {
+        Serial.println("Retrying pump state check...");
+        delay(500);
+      }
+    }
+
+    http.end();
+  }
+
+  if (!success) {
+    Serial.println("Failed to check pump state after retries");
+  }
+}
+
+void sendDataToServer() {
+  if (!wifiConnected) {
+    Serial.println("WiFi not connected, skipping server update");
+    return;
+  }
+
+  if (!httpInitialized) {
+    http.setTimeout(2000);
+    httpInitialized = true;
+  }
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastPumpToggle < PUMP_TOGGLE_COOLDOWN) {
+    Serial.println("Skipping server update due to recent pump toggle");
+    return;
   }
 
   String jsonData = "{\"voltage\":" + String(sensorData.voltage, 1) +
@@ -238,70 +335,89 @@ void sendDataToServer() {
                     ",\"tds\":" + String(sensorData.tdsValue, 1) +
                     ",\"flow\":" + String(sensorData.flowRate, 1) +
                     ",\"light\":" + String(sensorData.ldrValue) +
-                    ",\"pump\":1}"; // Assuming pump 1 for simplicity
+                    ",\"switch\":" + String(sensorData.pumpState ? 1 : 0) +
+                    ",\"pump_id\":1}";
 
-  http.begin(serverName);
-  http.addHeader("Content-Type", "application/json");
+  static unsigned long lastLedToggle = 0;
+  const unsigned long LED_DEBOUNCE_MS = 1000;
 
-  int httpResponseCode = http.POST(jsonData);
+  int retries = 3;
+  bool success = false;
 
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    if (!serverConnected) {
-      serverConnected = true;
-      Serial.println("Server connected!");
-    }
+  while (retries > 0 && !success) {
+    http.begin(serverName);
+    http.addHeader("Content-Type", "application/json");
 
-    // Debug: Print received response
+    int httpResponseCode = http.POST(jsonData);
     if (debugMode) {
-      Serial.println("Server response:");
-      Serial.println(response);
+      Serial.print("Sending: ");
+      Serial.println(jsonData);
     }
 
-    // Use a more flexible approach to parse pump control commands
-    // Option 1: Simple string check (more flexible than exact match)
-    if (response.indexOf("\"pump_id\": 1") != -1 && response.indexOf("\"state\": 1") != -1) {
-      digitalWrite(pumpPin, HIGH);
-      sensorData.pumpState = true;
-      Serial.println("Pump command received: ON");
-    } else if (response.indexOf("\"pump_id\": 1") != -1 && response.indexOf("\"state\": 0") != -1) {
-      digitalWrite(pumpPin, LOW);
-      sensorData.pumpState = false;
-      Serial.println("Pump command received: OFF");
-    }
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      if (!serverConnected) {
+        serverConnected = true;
+        Serial.println("Server connected!");
+      }
 
-    // Option 2: Use proper JSON parsing (more robust but requires ArduinoJson library)
-    // Uncomment if you add ArduinoJson library
-    /*
-    DynamicJsonDocument doc(1024);
-    DeserializationError error = deserializeJson(doc, response);
-    
-    if (!error && doc.containsKey("pump_states")) {
+      if (debugMode) {
+        Serial.print("Server response: ");
+        Serial.println(response);
+      }
+
+      StaticJsonDocument<512> doc;
+      DeserializationError error = deserializeJson(doc, response);
+      if (error) {
+        Serial.print("JSON parsing failed: ");
+        Serial.println(error.c_str());
+        retries--;
+        if (retries > 0) {
+          Serial.println("Retrying server update...");
+          delay(500);
+        }
+        http.end();
+        continue;
+      }
+
       JsonArray pumpStates = doc["pump_states"];
-      for (JsonObject pumpState : pumpStates) {
-        if (pumpState["pump_id"] == 1) {
-          if (pumpState["state"] == 1) {
-            digitalWrite(pumpPin, HIGH);
-            sensorData.pumpState = true;
-            Serial.println("Pump turned ON via JSON parsing");
+      for (JsonObject pump : pumpStates) {
+        if (pump["pump_id"] == 1) {
+          bool newState = pump["state"] == 1;
+          unsigned long currentMillis = millis();
+          if (newState != sensorData.pumpState && currentMillis - lastLedToggle > LED_DEBOUNCE_MS) {
+            digitalWrite(pumpPin, newState ? HIGH : LOW);
+            sensorData.pumpState = newState;
+            lastLedToggle = currentMillis;
+            lastPumpToggle = currentMillis; // Update toggle timestamp
+            Serial.print("Pump 1 (Pin 13) set to ");
+            Serial.println(newState ? "ON" : "OFF");
           } else {
-            digitalWrite(pumpPin, LOW);
-            sensorData.pumpState = false;
-            Serial.println("Pump turned OFF via JSON parsing");
+            Serial.println("Pump state unchanged or debounced");
           }
+          break;
         }
       }
+      success = true;
+    } else {
+      if (serverConnected) {
+        serverConnected = false;
+        Serial.print("Server connection failed with error: ");
+        Serial.println(httpResponseCode);
+      }
+      retries--;
+      if (retries > 0) {
+        Serial.println("Retrying server update...");
+        delay(500);
+      }
     }
-    */
-  } else {
-    if (serverConnected) {
-      serverConnected = false;
-      Serial.print("Server connection failed with error: ");
-      Serial.println(httpResponseCode);
-    }
+
+    http.end();
   }
 
-  http.end();
+  if (!success) {
+    Serial.println("Failed to send data after retries");
+  }
 }
 
 void printToSerial() {
@@ -335,21 +451,6 @@ void manageLEDsAndBuzzer() {
         lastAlertToggle = currentMillis;
       }
     }
-  }
-}
-
-// Test function to verify pin 13 is working correctly
-void testLED() {
-  unsigned long currentMillis = millis();
-  
-  // Toggle LED every MANUAL_LED_TOGGLE_INTERVAL if in debug mode
-  if (debugMode && currentMillis - lastManualLedToggle > MANUAL_LED_TOGGLE_INTERVAL) {
-    bool newState = !digitalRead(pumpPin);
-    digitalWrite(pumpPin, newState);
-    sensorData.pumpState = newState;
-    Serial.print("MANUAL TEST: Toggling pump/LED to ");
-    Serial.println(newState ? "ON" : "OFF");
-    lastManualLedToggle = currentMillis;
   }
 }
 
@@ -398,19 +499,21 @@ void setup() {
 
   pinMode(flowSensorPin, INPUT_PULLUP);
   pinMode(buzzerPin, OUTPUT);
-  pinMode(pumpPin, OUTPUT); // Set pin 13 as output for LED/pump
+  pinMode(pumpPin, OUTPUT);
   pinMode(testBuzzerPin, OUTPUT);
   pinMode(greenLedPin, OUTPUT);
 
-  // Explicitly initialize pin 13 to OFF state
   digitalWrite(pumpPin, LOW);
   digitalWrite(testBuzzerPin, LOW);
   digitalWrite(greenLedPin, LOW);
 
-  // Test LED on pin 13 during startup
   Serial.println("Testing pin 13 (pump/LED)...");
   digitalWrite(pumpPin, HIGH);
-  delay(500);
+  delay(1000);
+  digitalWrite(pumpPin, LOW);
+  delay(1000);
+  digitalWrite(pumpPin, HIGH);
+  delay(1000);
   digitalWrite(pumpPin, LOW);
   Serial.println("Pin 13 test complete");
 
@@ -429,6 +532,10 @@ void setup() {
   connectToWiFi();
   attachInterrupt(digitalPinToInterrupt(flowSensorPin), flowPulse, RISING);
 
+  // Initialize pump state
+  sensorData.pumpState = false;
+  digitalWrite(pumpPin, LOW);
+
   Serial.println("Setup complete!");
 }
 
@@ -437,17 +544,15 @@ void loop() {
 
   if (currentMillis - lastHeartbeat > HEARTBEAT_INTERVAL) {
     Serial.println("System heartbeat: running");
-    // Print pin 13 state with each heartbeat
     Serial.print("Pin 13 state: ");
     Serial.println(digitalRead(pumpPin) ? "HIGH (ON)" : "LOW (OFF)");
+    Serial.print("WiFi status: ");
+    Serial.println(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
     lastHeartbeat = currentMillis;
   }
 
   manageWiFiConnection();
   manageLEDsAndBuzzer();
-  
-  // Test LED functionality if in debug mode
-  testLED();
 
   if (currentMillis - lastSensorRead > SENSOR_READ_INTERVAL) {
     readSensors();
