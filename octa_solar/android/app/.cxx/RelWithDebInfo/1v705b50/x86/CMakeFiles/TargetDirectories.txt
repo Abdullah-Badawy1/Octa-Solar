@@ -1,0 +1,2 @@
+/home/abdullah/Octa-Solar/octa_solar/android/app/.cxx/RelWithDebInfo/1v705b50/x86/CMakeFiles/edit_cache.dir
+/home/abdullah/Octa-Solar/octa_solar/android/app/.cxx/RelWithDebInfo/1v705b50/x86/CMakeFiles/rebuild_cache.dir
