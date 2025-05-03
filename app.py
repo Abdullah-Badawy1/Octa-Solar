@@ -6,28 +6,33 @@ import bcrypt
 from flask_cors import CORS
 import logging
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
 app = Flask(__name__, static_folder='static')
-CORS(app)
-logging.basicConfig(level=logging.DEBUG)
+CORS(app, resources={r"/*": {"origins": "*"}})  # Explicitly allow all routes
 
 db_config = {
     'host': 'localhost',
     'user': 'adminuser',
     'password': 'strongpassword',
     'database': 'octa',
-    'charset': 'utf8mb3',
-    'collation': 'utf8mb3_general_ci'
+    'charset': 'utf8mb4',  # Changed from utf8mb3
+    'collation': 'utf8mb4_general_ci'
 }
 
 def get_db_connection():
     try:
-        return mysql.connector.connect(**db_config)
-    except Exception as e:
+        conn = mysql.connector.connect(**db_config)
+        logging.debug("Database connection established")
+        return conn
+    except mysql.connector.Error as e:
         logging.error(f"Database connection failed: {str(e)}")
         raise
 
 @app.route('/')
 def welcome():
+    logging.debug("Serving welcome page")
     return '''
     <!DOCTYPE html>
     <html lang="en">
@@ -59,12 +64,12 @@ def welcome():
 
 @app.route('/web/')
 def serve_flutter_index():
-    print("Serving index.html from octa_flutter/build/web")
+    logging.debug("Serving index.html from octa_flutter/build/web")
     return send_from_directory('octa_flutter/build/web', 'index.html')
 
 @app.route('/web/<path:path>')
 def serve_flutter_web(path):
-    print(f"Serving {path} from octa_flutter/build/web")
+    logging.debug(f"Serving {path} from octa_flutter/build/web")
     return send_from_directory('octa_flutter/build/web', path)
 
 @app.route('/update', methods=['POST'])
@@ -103,13 +108,11 @@ def update():
             cursor.execute('INSERT INTO sensors (timestamp, value) VALUES (%s, %s)', (datetime.now(), light))
             inserted += 1
 
-        # Fetch the latest pump state, ensuring it's recent
         cursor.execute('SELECT state, timestamp FROM pump_states WHERE pump_id = %s ORDER BY timestamp DESC LIMIT 1', (pump_id,))
         result = cursor.fetchone()
         current_state = result[0] if result else switch
         state_timestamp = result[1] if result else datetime.now()
         
-        # Only update if the state is recent (within 10 seconds)
         if (datetime.now() - state_timestamp).total_seconds() < 10:
             cursor.execute('INSERT INTO pump_states (timestamp, state, pump_id) VALUES (%s, %s, %s)', (datetime.now(), current_state, pump_id))
         else:
@@ -123,7 +126,9 @@ def update():
             'status': 'success',
             'pump_states': [{'pump_id': pump_id, 'state': current_state, 'timestamp': str(state_timestamp)}]
         }), 200
-
+    except mysql.connector.Error as e:
+        logging.error(f"Update database error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
     except Exception as e:
         logging.error(f"Update error: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -147,6 +152,9 @@ def get_pump_state():
             }), 200
         else:
             return jsonify({'status': 'error', 'message': 'No recent pump state found'}), 404
+    except mysql.connector.Error as e:
+        logging.error(f"Pump state database error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
     except Exception as e:
         logging.error(f"Pump state error: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -159,23 +167,38 @@ def get_pump_state():
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
+    logging.debug(f"Raw login request: {data}")
     if not data or 'username' not in data or 'password' not in data:
+        logging.warning("Missing username or password")
         return jsonify({'status': 'error', 'message': 'Missing username or password'}), 400
 
-    username = data['username']
-    password = data['password']
+    username = data['username'].lower().strip()  # Normalize username
+    password = data['password'].strip()  # Keep password case-sensitive
+    logging.debug(f"Normalized login: username={username}, password={password}, password_bytes={password.encode('utf-8')}")
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT password FROM users WHERE username = %s', (username,))
         result = cursor.fetchone()
+        logging.debug(f"DB result for {username}: {result}")
 
-        if result and bcrypt.checkpw(password.encode('utf-8'), result[0].encode('utf-8')):
-            return jsonify({'status': 'success', 'message': 'Login successful'}), 200
+        if result:
+            stored_hash = result[0]
+            if isinstance(stored_hash, str):
+                stored_hash = stored_hash.encode('utf-8')
+            if bcrypt.checkpw(password.encode('utf-8'), stored_hash):
+                logging.debug(f"Login successful for {username}")
+                return jsonify({'status': 'success', 'message': 'Login successful'}), 200
+            else:
+                logging.debug(f"Password mismatch for {username}, input_bytes={password.encode('utf-8')}, stored_hash={stored_hash}")
+                return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
         else:
+            logging.debug(f"User {username} not found")
             return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
-
+    except mysql.connector.Error as e:
+        logging.error(f"Login database error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
     except Exception as e:
         logging.error(f"Login error: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -188,27 +211,31 @@ def login():
 @app.route('/api/signup', methods=['POST'])
 def signup():
     data = request.get_json()
+    logging.debug(f"Raw signup request: {data}")
     if not data or 'username' not in data or 'password' not in data or 'email' not in data:
+        logging.warning("Missing required fields")
         return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
 
-    username = data['username']
-    password = data['password']
-    email = data['email']
-
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    username = data['username'].lower().strip()  # Normalize username
+    password = data['password'].strip()  # Keep password case-sensitive
+    email = data['email'].lower().strip()  # Normalize email
+    logging.debug(f"Normalized signup: username={username}, password={password}, email={email}, password_bytes={password.encode('utf-8')}")
 
     try:
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        logging.debug(f"Hashed password for {username}: {hashed_password}")
+
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('INSERT INTO users (username, password, email) VALUES (%s, %s, %s)', (username, hashed_password, email))
         conn.commit()
+        logging.debug(f"User {username} committed to database")
         return jsonify({'status': 'success', 'message': 'User created'}), 201
-
     except mysql.connector.Error as e:
         if e.errno == 1062:
-            logging.warning(f"Signup failed: Duplicate entry - {str(e)}")
+            logging.warning(f"Duplicate entry: {str(e)}")
             return jsonify({'status': 'error', 'message': 'Username or email already exists'}), 409
-        logging.error(f"Signup error: {str(e)}")
+        logging.error(f"Signup database error: {str(e)}")
         return jsonify({'error': str(e)}), 500
     except Exception as e:
         logging.error(f"Signup error: {str(e)}")
@@ -227,7 +254,6 @@ def get_sensors():
         cursor.execute('SELECT timestamp, value FROM sensors ORDER BY timestamp DESC LIMIT 5')
         sensors = cursor.fetchall()
 
-        # Fetch only the latest pump state for each pump_id
         query = (
             "SELECT ps.timestamp, ps.state, ps.pump_id "
             "FROM pump_states ps "
@@ -249,7 +275,9 @@ def get_sensors():
                 {'timestamp': str(row[0]), 'state': row[1], 'pump_id': row[2]} for row in pump_states
             ]
         }), 200
-
+    except mysql.connector.Error as e:
+        logging.error(f"Sensors database error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
     except Exception as e:
         logging.error(f"Sensors error: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -264,6 +292,7 @@ def control_switch():
     data = request.get_json()
     logging.debug(f"Switch data: {data}")
     if not data or 'state' not in data or 'pump_id' not in data:
+        logging.warning("Missing state or pump_id")
         return jsonify({'status': 'error', 'message': 'Missing state or pump_id'}), 400
 
     state = data['state']
@@ -276,7 +305,9 @@ def control_switch():
         conn.commit()
         logging.debug(f"Switch updated: pump_id={pump_id}, state={state}")
         return jsonify({'status': 'success', 'state': state, 'pump_id': pump_id}), 200
-
+    except mysql.connector.Error as e:
+        logging.error(f"Switch database error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
     except Exception as e:
         logging.error(f"Switch error: {str(e)}")
         return jsonify({'error': str(e)}), 500

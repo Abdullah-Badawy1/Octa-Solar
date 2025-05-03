@@ -8,50 +8,34 @@ class AuthService with ChangeNotifier {
     return 'http://192.168.34.6:5000';
   }
 
-  Future<http.Response> _retryRequest(
-    Future<http.Response> Function() request, {
-    int maxRetries = 3,
-    Duration initialDelay = const Duration(seconds: 2),
-  }) async {
-    int retryCount = 0;
-    Duration delay = initialDelay;
-
-    while (retryCount < maxRetries) {
-      try {
-        final response = await request();
-        return response;
-      } catch (e) {
-        retryCount++;
-        if (retryCount == maxRetries) {
-          print('Max retries reached. Error: $e');
-          rethrow;
-        }
-        print('Request failed (attempt $retryCount/$maxRetries). Retrying in ${delay.inSeconds}s... Error: $e');
-        await Future.delayed(delay);
-        delay = Duration(seconds: delay.inSeconds * 2);
-      }
-    }
-    throw Exception('Unexpected error in retry logic');
-  }
-
   Future<bool> signup(String username, String password, String email) async {
     try {
-      print('Attempting signup at $baseUrl/api/signup');
-      final response = await _retryRequest(() => http.post(
-            Uri.parse('$baseUrl/api/signup'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'username': username,
-              'password': password,
-              'email': email,
-            }),
-          ));
+      final normalizedUsername = _sanitizeInput(username).toLowerCase();
+      final normalizedPassword = _sanitizeInput(password);
+      final normalizedEmail = _sanitizeInput(email).toLowerCase();
+      print('Raw signup input: username="$username", password="$password", email="$email"');
+      print('Normalized signup: username="$normalizedUsername", password="$normalizedPassword", email="$normalizedEmail"');
+      print('Signup request to $baseUrl/api/signup');
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/signup'),
+        headers: {
+          'Content-Type': 'application/json; charset=UTF-8',
+          'Accept': 'application/json',
+        },
+        body: jsonEncode({
+          'username': normalizedUsername,
+          'password': normalizedPassword,
+          'email': normalizedEmail,
+        }),
+      );
 
       print('Signup response: ${response.statusCode} - ${response.body}');
       if (response.statusCode == 201) {
         notifyListeners();
         return true;
       }
+      print('Signup failed: ${response.body}');
       return false;
     } catch (e) {
       print('Signup error: $e');
@@ -61,28 +45,45 @@ class AuthService with ChangeNotifier {
 
   Future<bool> login(String username, String password) async {
     try {
-      print('Attempting login at $baseUrl/api/login');
-      final response = await _retryRequest(() => http.post(
-            Uri.parse('$baseUrl/api/login'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'username': username,
-              'password': password,
-            }),
-          ));
+      final normalizedUsername = _sanitizeInput(username).toLowerCase();
+      final normalizedPassword = _sanitizeInput(password);
+      print('Raw login input: username="$username", password="$password"');
+      print('Normalized login: username="$normalizedUsername", password="$normalizedPassword"');
+      print('Login request to $baseUrl/api/login');
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/login'),
+        headers: {
+          'Content-Type': 'application/json; charset=UTF-8',
+          'Accept': 'application/json',
+        },
+        body: jsonEncode({
+          'username': normalizedUsername,
+          'password': normalizedPassword,
+        }),
+      );
 
       print('Login response: ${response.statusCode} - ${response.body}');
       if (response.statusCode == 200) {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('username', username);
+        await prefs.setString('username', normalizedUsername);
         notifyListeners();
         return true;
       }
+      print('Login failed: ${response.body}');
       return false;
     } catch (e) {
       print('Login error: $e');
       return false;
     }
+  }
+
+  String _sanitizeInput(String input) {
+    String cleaned = input
+        .replaceAll(RegExp(r'[^\x20-\x7E]'), '') // Keep ASCII printable
+        .trim();
+    print('Sanitized input: raw="$input", cleaned="$cleaned"');
+    return cleaned;
   }
 
   Future<bool> isLoggedIn() async {
