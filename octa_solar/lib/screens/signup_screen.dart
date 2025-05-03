@@ -1,6 +1,19 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:octa_solar/screens/login_screen.dart';
 import 'package:octa_solar/services/auth_service.dart';
+
+class SignupParams {
+  final String email;
+  final String password;
+
+  SignupParams(this.email, this.password);
+}
+
+Future<bool> _performSignup(SignupParams params) async {
+  final authService = AuthService();
+  return authService.signup(params.email, params.password);
+}
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -12,25 +25,34 @@ class SignupScreen extends StatefulWidget {
 class _SignupScreenState extends State<SignupScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _authService = AuthService();
   bool _isLoading = false;
 
   void _signup() async {
     setState(() => _isLoading = true);
-    final success = await _authService.signup(
-      _emailController.text.trim(),
-      _passwordController.text.trim(),
-    );
-    setState(() => _isLoading = false);
-
-    if (success) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
+    try {
+      final success = await compute(
+        _performSignup,
+        SignupParams(
+          _emailController.text.trim(),
+          _passwordController.text.trim(),
+        ),
       );
-    } else {
+      setState(() => _isLoading = false);
+
+      if (success) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Signup failed. Email might be taken.')),
+        );
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Signup failed. Email might be taken.')),
+        SnackBar(content: Text('Failed to connect to server: $e')),
       );
     }
   }
