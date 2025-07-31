@@ -17,7 +17,7 @@ db_config = {
     'user': 'adminuser',
     'password': 'strongpassword',
     'database': 'octa',
-    'charset': 'utf8mb4',  # Changed from utf8mb3
+    'charset': 'utf8mb4',
     'collation': 'utf8mb4_general_ci'
 }
 
@@ -90,42 +90,77 @@ def update():
         light = data.get('light')
         switch = data.get('switch', 0)
         pump_id = data.get('pump_id', 1)
+        total_liters = data.get('total_liters')  # New: Optional total liters from ESP32
 
         inserted = 0
-        if voltage is not None and voltage > 0:
-            cursor.execute('INSERT INTO sensors (timestamp, value) VALUES (%s, %s)', (datetime.now(), voltage))
-            inserted += 1
-        if current is not None and current >= 0:
-            cursor.execute('INSERT INTO sensors (timestamp, value) VALUES (%s, %s)', (datetime.now(), current))
-            inserted += 1
-        if tds is not None and tds >= 0:
-            cursor.execute('INSERT INTO sensors (timestamp, value) VALUES (%s, %s)', (datetime.now(), tds))
-            inserted += 1
-        if flow is not None and flow >= 0:
-            cursor.execute('INSERT INTO sensors (timestamp, value) VALUES (%s, %s)', (datetime.now(), flow))
-            inserted += 1
-        if light is not None and light >= 0:
-            cursor.execute('INSERT INTO sensors (timestamp, value) VALUES (%s, %s)', (datetime.now(), light))
-            inserted += 1
+        warnings = []
 
+        # Insert sensor data with sensor_type
+        if voltage is not None and 0 <= voltage <= 50:  # Reasonable range for voltage
+            cursor.execute('INSERT INTO sensors (timestamp, sensor_type, value) VALUES (%s, %s, %s)', (datetime.now(), 'voltage', voltage))
+            inserted += 1
+        elif voltage is not None:
+            warnings.append(f"Invalid voltage: {voltage}")
+
+        if current is not None and 0 <= current <= 20:  # Reasonable range for current
+            cursor.execute('INSERT INTO sensors (timestamp, sensor_type, value) VALUES (%s, %s, %s)', (datetime.now(), 'current', current))
+            inserted += 1
+        elif current is not None:
+            warnings.append(f"Invalid current: {current}")
+
+        if tds is not None and 0 <= tds <= 2000:  # Reasonable range for TDS (ppm)
+            cursor.execute('INSERT INTO sensors (timestamp, sensor_type, value) VALUES (%s, %s, %s)', (datetime.now(), 'tds', tds))
+            inserted += 1
+        elif tds is not None:
+            warnings.append(f"Invalid TDS: {tds}")
+
+        if flow is not None and 0 <= flow <= 50:  # Reasonable range for flow rate (L/min)
+            cursor.execute('INSERT INTO sensors (timestamp, sensor_type, value) VALUES (%s, %s, %s)', (datetime.now(), 'flow', flow))
+            inserted += 1
+            logging.debug(f"Flow rate recorded: {flow} L/min")
+        elif flow is not None:
+            warnings.append(f"Invalid flow rate: {flow}")
+            logging.warning(f"Invalid flow rate received: {flow}")
+
+        if light is not None and 0 <= light <= 4095:  # ADC range for LDR
+            cursor.execute('INSERT INTO sensors (timestamp, sensor_type, value) VALUES (%s, %s, %s)', (datetime.now(), 'light', light))
+            inserted += 1
+        elif light is not None:
+            warnings.append(f"Invalid light: {light}")
+
+        # New: Store total liters if provided
+        if total_liters is not None and total_liters >= 0:
+            cursor.execute('INSERT INTO total_liters (timestamp, pump_id, value) VALUES (%s, %s, %s)', (datetime.now(), pump_id, total_liters))
+            logging.debug(f"Total liters recorded: {total_liters} L for pump_id {pump_id}")
+
+        # Pump state handling with flow rate validation
         cursor.execute('SELECT state, timestamp FROM pump_states WHERE pump_id = %s ORDER BY timestamp DESC LIMIT 1', (pump_id,))
         result = cursor.fetchone()
         current_state = result[0] if result else switch
         state_timestamp = result[1] if result else datetime.now()
-        
+
         if (datetime.now() - state_timestamp).total_seconds() < 10:
             cursor.execute('INSERT INTO pump_states (timestamp, state, pump_id) VALUES (%s, %s, %s)', (datetime.now(), current_state, pump_id))
         else:
             current_state = switch
             cursor.execute('INSERT INTO pump_states (timestamp, state, pump_id) VALUES (%s, %s, %s)', (datetime.now(), current_state, pump_id))
 
+        # Check for flow rate vs pump state inconsistency
+        if current_state == 1 and flow is not None and flow < 0.1:
+            warnings.append(f"Warning: Pump ON but flow rate is low ({flow} L/min)")
+
         conn.commit()
         logging.debug(f"Inserted {inserted} sensor records, pump state for pump_id {pump_id}: {current_state}")
 
-        return jsonify({
+        response = {
             'status': 'success',
             'pump_states': [{'pump_id': pump_id, 'state': current_state, 'timestamp': str(state_timestamp)}]
-        }), 200
+        }
+        if warnings:
+            response['warnings'] = warnings
+            logging.warning(f"Warnings during update: {warnings}")
+
+        return jsonify(response), 200
     except mysql.connector.Error as e:
         logging.error(f"Update database error: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -172,8 +207,8 @@ def login():
         logging.warning("Missing username or password")
         return jsonify({'status': 'error', 'message': 'Missing username or password'}), 400
 
-    username = data['username'].lower().strip()  # Normalize username
-    password = data['password'].strip()  # Keep password case-sensitive
+    username = data['username'].lower().strip()
+    password = data['password'].strip()
     logging.debug(f"Normalized login: username={username}, password={password}, password_bytes={password.encode('utf-8')}")
 
     try:
@@ -216,9 +251,9 @@ def signup():
         logging.warning("Missing required fields")
         return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
 
-    username = data['username'].lower().strip()  # Normalize username
-    password = data['password'].strip()  # Keep password case-sensitive
-    email = data['email'].lower().strip()  # Normalize email
+    username = data['username'].lower().strip()
+    password = data['password'].strip()
+    email = data['email'].lower().strip()
     logging.debug(f"Normalized signup: username={username}, password={password}, email={email}, password_bytes={password.encode('utf-8')}")
 
     try:
@@ -251,9 +286,20 @@ def get_sensors():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT timestamp, value FROM sensors ORDER BY timestamp DESC LIMIT 5')
+        # Fetch latest sensor data by type
+        cursor.execute('''
+            SELECT timestamp, sensor_type, value 
+            FROM sensors 
+            WHERE (sensor_type, timestamp) IN (
+                SELECT sensor_type, MAX(timestamp)
+                FROM sensors
+                GROUP BY sensor_type
+            )
+            ORDER BY timestamp DESC
+        ''')
         sensors = cursor.fetchall()
 
+        # Fetch latest pump states
         query = (
             "SELECT ps.timestamp, ps.state, ps.pump_id "
             "FROM pump_states ps "
@@ -268,11 +314,26 @@ def get_sensors():
         cursor.execute(query)
         pump_states = cursor.fetchall()
 
-        logging.debug(f"Sensors fetched: {len(sensors)}, Pump states: {len(pump_states)}")
+        # Fetch latest total liters
+        cursor.execute('''
+            SELECT timestamp, pump_id, value 
+            FROM total_liters 
+            WHERE (pump_id, timestamp) IN (
+                SELECT pump_id, MAX(timestamp)
+                FROM total_liters
+                GROUP BY pump_id
+            )
+        ''')
+        total_liters = cursor.fetchall()
+
+        logging.debug(f"Sensors fetched: {len(sensors)}, Pump states: {len(pump_states)}, Total liters: {len(total_liters)}")
         return jsonify({
-            'sensors': [{'timestamp': str(row[0]), 'value': row[1]} for row in sensors],
+            'sensors': [{'timestamp': str(row[0]), 'sensor_type': row[1], 'value': row[2]} for row in sensors],
             'pump_states': [
                 {'timestamp': str(row[0]), 'state': row[1], 'pump_id': row[2]} for row in pump_states
+            ],
+            'total_liters': [
+                {'timestamp': str(row[0]), 'pump_id': row[1], 'value': row[2]} for row in total_liters
             ]
         }), 200
     except mysql.connector.Error as e:

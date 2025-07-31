@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthService with ChangeNotifier {
   static String get baseUrl {
-    return 'http://192.168.34.6:5000';
+    return 'http://192.168.223.6:5000';
   }
 
   Future<bool> signup(String username, String password, String email) async {
